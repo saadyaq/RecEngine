@@ -22,3 +22,6 @@ mlartifacts/
 # IDE
 .vscode/
 .idea/
+
+# Claude
+CLAUDE.md
