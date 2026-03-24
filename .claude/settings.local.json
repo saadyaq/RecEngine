@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(C:/venvs/RecEngine311/Scripts/python -m pytest tests/test_data.py -v)"
+    ]
+  }
+}
