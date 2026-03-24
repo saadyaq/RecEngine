@@ -24,5 +24,8 @@ class Settings(BaseSettings):
     # Tokenizer
     TOKENIZER_MODEL: str = "cl100k_base"
 
+    # MLflow
+    MLFLOW_TRACKING_URI: str = "http://localhost:5000"
+
 
 settings = Settings()
