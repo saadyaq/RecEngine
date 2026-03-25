@@ -9,6 +9,7 @@ from loguru import logger
 
 from src.config import settings
 from src.models.collaborative import CollaborativeModel
+from src.models.semantic import SemanticModel, build_product_texts
 from src.training.evaluate import ndcg_at_k, precision_at_k, recall_at_k
 
 
@@ -37,6 +38,141 @@ def evaluate_model(
     results = {}
     for metric_name, values in user_metrics.items():
         results[metric_name] = sum(values) / len(values) if values else 0.0
+
+    return results
+
+
+def evaluate_semantic_model(
+    model: SemanticModel,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    ks: list[int] = None,
+) -> dict[str, float]:
+    """Evaluate Model B with the same ranking metrics as Model A."""
+    if ks is None:
+        ks = [5, 10, 20]
+
+    user_metrics = {f"precision@{k}": [] for k in ks}
+    user_metrics.update({f"recall@{k}": [] for k in ks})
+    user_metrics.update({f"ndcg@{k}": [] for k in ks})
+
+    test_users = test_df["user_id"].unique()
+    logger.info(f"Evaluating Model B on {len(test_users)} users...")
+
+    for user_id in test_users:
+        relevant = test_df[test_df["user_id"] == user_id]["parent_asin"].tolist()
+        recs = model.recommend(user_id, train_df, n=max(ks))
+        recommended = [item_id for item_id, _ in recs]
+
+        for k in ks:
+            user_metrics[f"precision@{k}"].append(precision_at_k(recommended, relevant, k))
+            user_metrics[f"recall@{k}"].append(recall_at_k(recommended, relevant, k))
+            user_metrics[f"ndcg@{k}"].append(ndcg_at_k(recommended, relevant, k))
+
+    results = {}
+    for metric_name, values in user_metrics.items():
+        results[metric_name] = sum(values) / len(values) if values else 0.0
+
+    return results
+
+
+def train_semantic_and_log(
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    metadata_df: pd.DataFrame,
+    model_name: str = "all-MiniLM-L6-v2",
+) -> tuple[SemanticModel, dict]:
+    """Train Model B, evaluate, and log to MLflow."""
+    mlflow.set_experiment("recengine-model-b")
+
+    with mlflow.start_run(run_name="semantic-model"):
+        mlflow.log_param("model_name", model_name)
+        mlflow.log_param("model_type", "SemanticEmbeddings")
+
+        # Build index
+        start_time = time.time()
+        product_texts = build_product_texts(metadata_df)
+        mlflow.log_metric("num_products", len(product_texts))
+
+        model = SemanticModel(model_name=model_name)
+        model.build_index(product_texts)
+        build_duration = time.time() - start_time
+        mlflow.log_metric("build_duration_seconds", build_duration)
+
+        # Evaluate
+        metrics = evaluate_semantic_model(model, train_df, test_df)
+        mlflow.log_metrics(metrics)
+
+        logger.info(
+            f"Model B built in {build_duration:.1f}s | " f"NDCG@10: {metrics.get('ndcg@10', 0):.4f}"
+        )
+
+        return model, metrics
+
+
+def compare_models(
+    metrics_a: dict[str, float],
+    metrics_b: dict[str, float],
+) -> pd.DataFrame:
+    """Create a comparison table between Model A and Model B."""
+    all_keys = sorted(set(metrics_a.keys()) | set(metrics_b.keys()))
+    rows = []
+    for key in all_keys:
+        val_a = metrics_a.get(key, float("nan"))
+        val_b = metrics_b.get(key, float("nan"))
+        diff = val_b - val_a if not (np.isnan(val_a) or np.isnan(val_b)) else float("nan")
+        rows.append({"metric": key, "model_a": val_a, "model_b": val_b, "diff_b_minus_a": diff})
+
+    comparison = pd.DataFrame(rows)
+    logger.info(f"\n{'='*60}\nModel A vs Model B comparison:\n{comparison.to_string(index=False)}")
+    return comparison
+
+
+def cold_start_analysis(
+    model_b: SemanticModel,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+) -> dict:
+    """Analyze Model B performance on cold-start vs warm items."""
+    train_items = set(train_df["parent_asin"].unique())
+    test_items = set(test_df["parent_asin"].unique())
+
+    cold_items = test_items - train_items
+    warm_items = test_items & train_items
+
+    # Split test set into cold-start and warm users/items
+    test_cold = test_df[test_df["parent_asin"].isin(cold_items)]
+    test_warm = test_df[test_df["parent_asin"].isin(warm_items)]
+
+    results = {
+        "total_test_items": len(test_items),
+        "cold_start_items": len(cold_items),
+        "warm_items": len(warm_items),
+        "cold_start_ratio": len(cold_items) / len(test_items) if test_items else 0,
+        "cold_start_interactions": len(test_cold),
+        "warm_interactions": len(test_warm),
+    }
+
+    # Evaluate Model B on warm items
+    if not test_warm.empty:
+        warm_metrics = evaluate_semantic_model(model_b, train_df, test_warm)
+        for k, v in warm_metrics.items():
+            results[f"warm_{k}"] = v
+
+    # For cold-start: Model B can still recommend via semantic similarity
+    # but the user must have training data (liked items) for the recommendation to work
+    if not test_cold.empty:
+        cold_metrics = evaluate_semantic_model(model_b, train_df, test_cold)
+        for k, v in cold_metrics.items():
+            results[f"cold_{k}"] = v
+
+    logger.info(
+        f"\nCold Start Analysis:\n"
+        f"  Total test items: {results['total_test_items']}\n"
+        f"  Cold-start items: {results['cold_start_items']} "
+        f"({results['cold_start_ratio']:.1%})\n"
+        f"  Warm items: {results['warm_items']}"
+    )
 
     return results
 
@@ -148,7 +284,7 @@ def hyperparameter_search(
     return best_model, best_metrics
 
 
-def run_training(tuning: bool = False):
+def run_training(tuning: bool = False, train_model_b: bool = False):
     data_dir = Path("data/processed")
     train_df = pd.read_parquet(data_dir / "train.parquet")
     test_df = pd.read_parquet(data_dir / "test.parquet")
@@ -157,14 +293,50 @@ def run_training(tuning: bool = False):
 
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
 
+    # Model A
     if tuning:
-        model, metrics = hyperparameter_search(train_df, test_df)
+        model_a, metrics_a = hyperparameter_search(train_df, test_df)
     else:
-        model, metrics = train_and_log(train_df, test_df)
+        model_a, metrics_a = train_and_log(train_df, test_df)
 
-    logger.info(f"Final metrics: {metrics}")
-    return model, metrics
+    logger.info(f"Model A metrics: {metrics_a}")
+
+    # Model B
+    if train_model_b:
+        metadata_path = data_dir / "metadata.parquet"
+        if not metadata_path.exists():
+            logger.warning("metadata.parquet not found, skipping Model B")
+            return model_a, metrics_a
+
+        metadata_df = pd.read_parquet(metadata_path)
+        model_b, metrics_b = train_semantic_and_log(train_df, test_df, metadata_df)
+
+        # Comparison
+        comparison = compare_models(metrics_a, metrics_b)
+        comparison.to_csv(data_dir / "model_comparison.csv", index=False)
+
+        # Cold start analysis
+        cold_results = cold_start_analysis(model_b, train_df, test_df)
+
+        # Log comparison in MLflow
+        mlflow.set_experiment("recengine-comparison")
+        with mlflow.start_run(run_name="model-a-vs-b"):
+            for k, v in metrics_a.items():
+                mlflow.log_metric(f"model_a_{k}", v)
+            for k, v in metrics_b.items():
+                mlflow.log_metric(f"model_b_{k}", v)
+            for k, v in cold_results.items():
+                if isinstance(v, (int, float)):
+                    mlflow.log_metric(f"cold_start_{k}", v)
+
+        return (model_a, metrics_a), (model_b, metrics_b)
+
+    return model_a, metrics_a
 
 
 if __name__ == "__main__":
-    run_training(tuning=False)
+    import sys
+
+    train_b = "--model-b" in sys.argv
+    tuning = "--tuning" in sys.argv
+    run_training(tuning=tuning, train_model_b=train_b)

@@ -5,7 +5,10 @@
       "Bash(C:/venvs/RecEngine311/Scripts/python -m pytest tests/test_models.py -v)",
       "Bash(C:/venvs/RecEngine311/Scripts/pip install:*)",
       "Bash(C:/venvs/RecEngine311/Scripts/python -m pip install scikit-surprise)",
-      "Bash(uv pip:*)"
+      "Bash(uv pip:*)",
+      "Bash(C:/venvs/RecEngine311/Scripts/python.exe -m pytest tests/test_models.py -v)",
+      "Bash(C:/venvs/RecEngine311/Scripts/python.exe -m pytest tests/test_data.py -v)",
+      "Bash(C:/venvs/RecEngine311/Scripts/python.exe -m pytest tests/ -v)"
     ]
   }
 }

@@ -1,6 +1,7 @@
 import pandas as pd
 
 from src.models.collaborative import CollaborativeModel
+from src.models.semantic import SemanticModel, build_product_texts
 from src.training.evaluate import ndcg_at_k, precision_at_k
 
 
@@ -77,3 +78,87 @@ def test_metrics_ndcg_at_k():
     # Partial match
     result = ndcg_at_k([1, 2, 3], [2, 3, 5], 3)
     assert 0.0 < result < 1.0
+
+
+# --- SemanticModel tests ---
+
+
+def _make_metadata_df():
+    """Small metadata for testing semantic model."""
+    return pd.DataFrame(
+        {
+            "parent_asin": ["i1", "i2", "i3", "i4", "i5"],
+            "title": [
+                "Wireless Bluetooth Headphones",
+                "Bluetooth Earbuds Wireless",
+                "USB-C Charging Cable",
+                "Laptop Stand Adjustable",
+                "Wireless Mouse Ergonomic",
+            ],
+            "description": [
+                "Noise cancelling over-ear headphones",
+                "In-ear wireless earbuds with microphone",
+                "Fast charging USB type C cable",
+                "Aluminum stand for laptop and tablet",
+                "Ergonomic wireless mouse with USB receiver",
+            ],
+            "features": [
+                ["Active noise cancellation", "40h battery"],
+                ["Bluetooth 5.0", "Touch controls"],
+                ["3ft length", "Nylon braided"],
+                ["Adjustable height", "Foldable"],
+                ["2.4GHz wireless", "Silent clicks"],
+            ],
+        }
+    )
+
+
+def test_semantic_model_builds_index():
+    metadata_df = _make_metadata_df()
+    product_texts = build_product_texts(metadata_df)
+    model = SemanticModel()
+    model.build_index(product_texts)
+    assert model.index.ntotal == 5
+
+
+def test_semantic_model_find_similar():
+    metadata_df = _make_metadata_df()
+    product_texts = build_product_texts(metadata_df)
+    model = SemanticModel()
+    model.build_index(product_texts)
+    results = model.find_similar("i1", n=3)
+    assert len(results) == 3
+    # Should not contain the query item itself
+    assert all(asin != "i1" for asin, _ in results)
+
+
+def test_semantic_model_recommend():
+    metadata_df = _make_metadata_df()
+    product_texts = build_product_texts(metadata_df)
+    model = SemanticModel()
+    model.build_index(product_texts)
+
+    train_df = pd.DataFrame(
+        {
+            "user_id": ["u1", "u1", "u1"],
+            "parent_asin": ["i1", "i2", "i3"],
+            "rating": [5.0, 4.0, 2.0],
+            "timestamp": [1, 2, 3],
+        }
+    )
+    recs = model.recommend("u1", train_df, n=2)
+    assert len(recs) <= 2
+    # Should not recommend items the user has already seen
+    seen = {"i1", "i2", "i3"}
+    for asin, _ in recs:
+        assert asin not in seen
+
+
+def test_embeddings_dimension():
+    metadata_df = _make_metadata_df()
+    product_texts = build_product_texts(metadata_df)
+    model = SemanticModel(model_name="all-MiniLM-L6-v2")
+    model.build_index(product_texts)
+    # MiniLM produces 384-dimensional embeddings
+    vec = model.index.reconstruct(0)
+    assert vec.shape[0] == 384
