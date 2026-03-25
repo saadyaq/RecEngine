@@ -33,7 +33,7 @@ def _make_train_df():
 
 def test_collaborative_model_fits():
     df = _make_train_df()
-    model = CollaborativeModel(n_factors=10, n_epochs=5)
+    model = CollaborativeModel(n_factors=10, n_epochs=5, regularization=0.01, alpha=40.0)
     model.fit(df)
     assert model.train_df is not None
     assert model.all_items is not None
@@ -41,7 +41,7 @@ def test_collaborative_model_fits():
 
 def test_collaborative_model_predicts():
     df = _make_train_df()
-    model = CollaborativeModel(n_factors=10, n_epochs=5)
+    model = CollaborativeModel(n_factors=10, n_epochs=5, regularization=0.01, alpha=40.0)
     model.fit(df)
     predictions = model.predict("u1", ["i1", "i2", "i3"])
     assert len(predictions) == 3
@@ -52,7 +52,7 @@ def test_collaborative_model_predicts():
 
 def test_collaborative_model_recommends_n_items():
     df = _make_train_df()
-    model = CollaborativeModel(n_factors=10, n_epochs=5)
+    model = CollaborativeModel(n_factors=10, n_epochs=5, regularization=0.01, alpha=40.0)
     model.fit(df)
     recs = model.recommend("u1", n=3, exclude_seen=False)
     assert len(recs) == 3

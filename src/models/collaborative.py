@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
+from implicit.als import AlternatingLeastSquares
 from loguru import logger
 from scipy.sparse import csr_matrix
-from sklearn.decomposition import TruncatedSVD
 
 
 class CollaborativeModel:
@@ -10,23 +10,22 @@ class CollaborativeModel:
         self,
         n_factors: int = 100,
         n_epochs: int = 20,
-        lr_all: float = 0.005,
-        reg_all: float = 0.02,
+        regularization: float = 0.01,
+        alpha: float = 40.0,
     ):
         self.n_factors = n_factors
         self.n_epochs = n_epochs
-        self.lr_all = lr_all
-        self.reg_all = reg_all
+        self.regularization = regularization
+        self.alpha = alpha  # confidence scaling for implicit feedback
 
-        self.svd = None
-        self.user_factors = None
-        self.item_factors = None
+        self.model = None
+        self.user_item_matrix = None
         self.global_mean = 0.0
-        self.user_map = {}
-        self.item_map = {}
-        self.reverse_item_map = {}
+        self.user_map: dict[str, int] = {}
+        self.item_map: dict[str, int] = {}
+        self.reverse_item_map: dict[int, str] = {}
         self.train_df = None
-        self.all_items = None
+        self.all_items: list[str] = []
 
     def fit(self, train_df: pd.DataFrame) -> "CollaborativeModel":
         self.train_df = train_df
@@ -43,36 +42,44 @@ class CollaborativeModel:
         # Build sparse user-item matrix
         row = train_df["user_id"].map(self.user_map).values
         col = train_df["parent_asin"].map(self.item_map).values
-        data = train_df["rating"].values
-        matrix = csr_matrix((data, (row, col)), shape=(len(users), len(items)))
+        data = train_df["rating"].values.astype(np.float32)
 
-        # SVD decomposition
-        n_components = min(self.n_factors, min(matrix.shape) - 1)
-        self.svd = TruncatedSVD(n_components=n_components, n_iter=self.n_epochs)
-        self.user_factors = self.svd.fit_transform(matrix)
-        self.item_factors = self.svd.components_.T
+        # Build user-item confidence matrix
+        user_item = csr_matrix((data, (row, col)), shape=(len(users), len(items)))
+        # Apply confidence weighting: confidence = alpha * rating
+        self.user_item_matrix = (user_item * self.alpha).tocsr()
+
+        self.model = AlternatingLeastSquares(
+            factors=self.n_factors,
+            iterations=self.n_epochs,
+            regularization=self.regularization,
+            random_state=42,
+        )
+        # implicit.fit expects user-item matrix
+        self.model.fit(self.user_item_matrix)
 
         logger.info(
-            f"CollaborativeModel trained on {len(users)} users, "
+            f"CollaborativeModel (ALS) trained on {len(users)} users, "
             f"{len(items)} items, {len(train_df)} ratings"
         )
         return self
 
     def predict(self, user_id: str, item_ids: list[str]) -> list[tuple[str, float]]:
-        predictions = []
         if user_id not in self.user_map:
             return [(item_id, self.global_mean) for item_id in item_ids]
 
         user_idx = self.user_map[user_id]
-        user_vec = self.user_factors[user_idx]
+        user_vec = self.model.user_factors[user_idx]
+        predictions = []
 
         for item_id in item_ids:
             if item_id not in self.item_map:
                 score = self.global_mean
             else:
                 item_idx = self.item_map[item_id]
-                item_vec = self.item_factors[item_idx]
+                item_vec = self.model.item_factors[item_idx]
                 score = float(np.dot(user_vec, item_vec))
+                # Clip to rating range
                 score = max(1.0, min(5.0, score))
             predictions.append((item_id, score))
         return predictions
@@ -80,12 +87,32 @@ class CollaborativeModel:
     def recommend(
         self, user_id: str, n: int = 10, exclude_seen: bool = True
     ) -> list[tuple[str, float]]:
-        if exclude_seen and self.train_df is not None:
-            seen_items = set(self.train_df[self.train_df["user_id"] == user_id]["parent_asin"])
-            candidate_items = [i for i in self.all_items if i not in seen_items]
-        else:
-            candidate_items = self.all_items
+        if user_id not in self.user_map:
+            return []
 
-        predictions = self.predict(user_id, candidate_items)
-        predictions.sort(key=lambda x: x[1], reverse=True)
-        return predictions[:n]
+        user_idx = self.user_map[user_id]
+
+        # Use implicit's optimized recommend method
+        if exclude_seen:
+            item_indices, scores = self.model.recommend(
+                user_idx,
+                self.user_item_matrix[user_idx],
+                N=n,
+                filter_already_liked_items=True,
+            )
+        else:
+            item_indices, scores = self.model.recommend(
+                user_idx,
+                self.user_item_matrix[user_idx],
+                N=n,
+                filter_already_liked_items=False,
+            )
+
+        results = []
+        for idx, score in zip(item_indices, scores):
+            item_id = self.reverse_item_map.get(int(idx))
+            if item_id:
+                # Map score to 1-5 range
+                clipped = max(1.0, min(5.0, float(score)))
+                results.append((item_id, clipped))
+        return results

@@ -20,9 +20,9 @@ def evaluate_model(
         ks = [5, 10, 20]
 
     # Per-user evaluation
-    user_metrics = {f"precision@{k}": [] for k in ks}
-    user_metrics.update({f"recall@{k}": [] for k in ks})
-    user_metrics.update({f"ndcg@{k}": [] for k in ks})
+    user_metrics = {f"precision_at_{k}": [] for k in ks}
+    user_metrics.update({f"recall_at_{k}": [] for k in ks})
+    user_metrics.update({f"ndcg_at_{k}": [] for k in ks})
 
     for user_id, group in test_df.groupby("user_id"):
         relevant = group["parent_asin"].tolist()
@@ -30,9 +30,9 @@ def evaluate_model(
         recommended = [item_id for item_id, _ in recs]
 
         for k in ks:
-            user_metrics[f"precision@{k}"].append(precision_at_k(recommended, relevant, k))
-            user_metrics[f"recall@{k}"].append(recall_at_k(recommended, relevant, k))
-            user_metrics[f"ndcg@{k}"].append(ndcg_at_k(recommended, relevant, k))
+            user_metrics[f"precision_at_{k}"].append(precision_at_k(recommended, relevant, k))
+            user_metrics[f"recall_at_{k}"].append(recall_at_k(recommended, relevant, k))
+            user_metrics[f"ndcg_at_{k}"].append(ndcg_at_k(recommended, relevant, k))
 
     # Average across users
     results = {}
@@ -52,9 +52,9 @@ def evaluate_semantic_model(
     if ks is None:
         ks = [5, 10, 20]
 
-    user_metrics = {f"precision@{k}": [] for k in ks}
-    user_metrics.update({f"recall@{k}": [] for k in ks})
-    user_metrics.update({f"ndcg@{k}": [] for k in ks})
+    user_metrics = {f"precision_at_{k}": [] for k in ks}
+    user_metrics.update({f"recall_at_{k}": [] for k in ks})
+    user_metrics.update({f"ndcg_at_{k}": [] for k in ks})
 
     test_users = test_df["user_id"].unique()
     logger.info(f"Evaluating Model B on {len(test_users)} users...")
@@ -65,9 +65,9 @@ def evaluate_semantic_model(
         recommended = [item_id for item_id, _ in recs]
 
         for k in ks:
-            user_metrics[f"precision@{k}"].append(precision_at_k(recommended, relevant, k))
-            user_metrics[f"recall@{k}"].append(recall_at_k(recommended, relevant, k))
-            user_metrics[f"ndcg@{k}"].append(ndcg_at_k(recommended, relevant, k))
+            user_metrics[f"precision_at_{k}"].append(precision_at_k(recommended, relevant, k))
+            user_metrics[f"recall_at_{k}"].append(recall_at_k(recommended, relevant, k))
+            user_metrics[f"ndcg_at_{k}"].append(ndcg_at_k(recommended, relevant, k))
 
     results = {}
     for metric_name, values in user_metrics.items():
@@ -104,7 +104,8 @@ def train_semantic_and_log(
         mlflow.log_metrics(metrics)
 
         logger.info(
-            f"Model B built in {build_duration:.1f}s | " f"NDCG@10: {metrics.get('ndcg@10', 0):.4f}"
+            f"Model B built in {build_duration:.1f}s | "
+            f"NDCG@10: {metrics.get('ndcg_at_10', 0):.4f}"
         )
 
         return model, metrics
@@ -182,8 +183,8 @@ def train_and_log(
     test_df: pd.DataFrame,
     n_factors: int = 100,
     n_epochs: int = 20,
-    lr_all: float = 0.005,
-    reg_all: float = 0.02,
+    regularization: float = 0.01,
+    alpha: float = 40.0,
 ) -> tuple[CollaborativeModel, dict]:
     mlflow.set_experiment("recengine-model-a")
 
@@ -193,8 +194,8 @@ def train_and_log(
             {
                 "n_factors": n_factors,
                 "n_epochs": n_epochs,
-                "lr_all": lr_all,
-                "reg_all": reg_all,
+                "regularization": regularization,
+                "alpha": alpha,
             }
         )
 
@@ -203,8 +204,8 @@ def train_and_log(
         model = CollaborativeModel(
             n_factors=n_factors,
             n_epochs=n_epochs,
-            lr_all=lr_all,
-            reg_all=reg_all,
+            regularization=regularization,
+            alpha=alpha,
         )
         model.fit(train_df)
         train_duration = time.time() - start_time
@@ -225,11 +226,11 @@ def train_and_log(
         mlflow.log_metrics(metrics)
 
         # Log model as artifact
-        mlflow.log_param("model_type", "SVD")
+        mlflow.log_param("model_type", "ALS")
 
         logger.info(
             f"Training done in {train_duration:.1f}s | RMSE: {rmse:.4f} | "
-            f"NDCG@10: {metrics.get('ndcg@10', 0):.4f}"
+            f"NDCG@10: {metrics.get('ndcg_at_10', 0):.4f}"
         )
 
         return model, {**metrics, "rmse": rmse}
@@ -240,10 +241,10 @@ def hyperparameter_search(
     test_df: pd.DataFrame,
 ) -> tuple[CollaborativeModel, dict]:
     param_grid = {
-        "n_factors": [50, 100, 150],
-        "n_epochs": [20, 30],
-        "lr_all": [0.005, 0.01],
-        "reg_all": [0.02, 0.05],
+        "n_factors": [50, 100, 200],
+        "n_epochs": [15, 30],
+        "regularization": [0.01, 0.1],
+        "alpha": [20.0, 40.0, 80.0],
     }
 
     best_model = None
@@ -260,8 +261,8 @@ def hyperparameter_search(
 
         model, metrics = train_and_log(train_df, test_df, **params)
 
-        if metrics["ndcg@10"] > best_ndcg:
-            best_ndcg = metrics["ndcg@10"]
+        if metrics["ndcg_at_10"] > best_ndcg:
+            best_ndcg = metrics["ndcg_at_10"]
             best_model = model
             best_metrics = metrics
 
@@ -274,8 +275,8 @@ def hyperparameter_search(
             {
                 "n_factors": best_model.n_factors,
                 "n_epochs": best_model.n_epochs,
-                "lr_all": best_model.lr_all,
-                "reg_all": best_model.reg_all,
+                "regularization": best_model.regularization,
+                "alpha": best_model.alpha,
             }
         )
         mlflow.log_metrics(best_metrics)
@@ -291,7 +292,18 @@ def run_training(tuning: bool = False, train_model_b: bool = False):
 
     logger.info(f"Train: {len(train_df):,} | Test: {len(test_df):,}")
 
-    mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
+    # Use local file storage by default, remote server if configured
+    tracking_uri = settings.MLFLOW_TRACKING_URI
+    if tracking_uri.startswith("http"):
+        # Check if server is reachable, fallback to local if not
+        try:
+            import requests
+
+            requests.get(tracking_uri, timeout=2)
+        except Exception:
+            tracking_uri = "sqlite:///mlflow.db"
+            logger.warning(f"MLflow server not reachable, using local storage: {tracking_uri}")
+    mlflow.set_tracking_uri(tracking_uri)
 
     # Model A
     if tuning:

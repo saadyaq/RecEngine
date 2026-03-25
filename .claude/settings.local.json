@@ -8,7 +8,11 @@
       "Bash(uv pip:*)",
       "Bash(C:/venvs/RecEngine311/Scripts/python.exe -m pytest tests/test_models.py -v)",
       "Bash(C:/venvs/RecEngine311/Scripts/python.exe -m pytest tests/test_data.py -v)",
-      "Bash(C:/venvs/RecEngine311/Scripts/python.exe -m pytest tests/ -v)"
+      "Bash(C:/venvs/RecEngine311/Scripts/python.exe -m pytest tests/ -v)",
+      "Bash(C:/venvs/RecEngine311/Scripts/pip.exe install:*)",
+      "Bash(C:/venvs/RecEngine311/Scripts/python.exe -m pip install implicit)",
+      "Bash(UV_LINK_MODE=copy uv pip install implicit --python C:/venvs/RecEngine311/Scripts/python.exe)",
+      "Bash(C:/venvs/RecEngine311/Scripts/python.exe -m pytest tests/test_models.py::test_collaborative_model_fits tests/test_models.py::test_collaborative_model_predicts tests/test_models.py::test_collaborative_model_recommends_n_items -v)"
     ]
   }
 }
