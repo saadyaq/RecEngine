@@ -7,7 +7,7 @@ from loguru import logger
 from src.config import settings
 
 
-def load_reviews(category: str = "Electronics", n: int = 500_000) -> pd.DataFrame:
+def load_reviews(category: str = "Electronics", n: int = 2_000_000) -> pd.DataFrame:
     logger.info(f"Loading reviews for category: {category} (n={n:,})")
     dataset = load_dataset(
         "McAuley-Lab/Amazon-Reviews-2023",
@@ -21,7 +21,7 @@ def load_reviews(category: str = "Electronics", n: int = 500_000) -> pd.DataFram
     return df
 
 
-def load_metadata(category: str = "Electronics", n: int = 100_000) -> pd.DataFrame:
+def load_metadata(category: str = "Electronics", n: int = 500_000) -> pd.DataFrame:
     logger.info(f"Loading metadata for category: {category} (n={n:,})")
     dataset = load_dataset(
         "McAuley-Lab/Amazon-Reviews-2023",
