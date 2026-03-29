@@ -13,7 +13,7 @@ class Settings(BaseSettings):
 
     # Data
     DATASET_CATEGORY: str = "Electronics"
-    MIN_INTERACTIONS: int = 5
+    MIN_INTERACTIONS: int = 10
     TEST_RATIO: float = 0.2
 
     # Chunk
