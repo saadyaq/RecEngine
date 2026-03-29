@@ -31,7 +31,7 @@ def build_product_texts(metadata_df: pd.DataFrame) -> dict[str, str]:
         features = row.get("features", "")
         if isinstance(features, list):
             features = " ".join(str(f) for f in features if f)
-        elif pd.isna(features):
+        elif not isinstance(features, str) or pd.isna(features):
             features = ""
         features = str(features).strip()
         if features:
