@@ -6,10 +6,14 @@ import numpy as np
 import mlflow
 import pandas as pd
 from loguru import logger
+from sklearn.metrics import roc_auc_score, log_loss
+from sklearn.model_selection import train_test_split
 
 from src.config import settings
 from src.models.collaborative import CollaborativeModel
 from src.models.semantic import SemanticModel, build_product_texts
+from src.models.ctr import CTRModel, build_ctr_dataset
+from src.models.features import build_user_features, build_item_features
 from src.training.evaluate import ndcg_at_k, precision_at_k, recall_at_k
 
 
@@ -285,7 +289,198 @@ def hyperparameter_search(
     return best_model, best_metrics
 
 
-def run_training(tuning: bool = False, train_model_b: bool = False):
+def train_ctr_and_log(
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    metadata_df: pd.DataFrame,
+    model_a: CollaborativeModel,
+    model_b: SemanticModel,
+    sample_users: int = 2000,
+) -> tuple[CTRModel, dict]:
+    """Train Model C (CTR XGBoost), evaluate, and log to MLflow."""
+    mlflow.set_experiment("recengine-model-c")
+
+    with mlflow.start_run(run_name="ctr-model"):
+        # Build features
+        logger.info("Building user and item features...")
+        user_features = build_user_features(train_df)
+        item_features = build_item_features(train_df, metadata_df)
+
+        # Build CTR dataset (sample users for speed)
+        logger.info(f"Building CTR dataset (sample_users={sample_users})...")
+        ctr_df = build_ctr_dataset(
+            train_df,
+            user_features,
+            item_features,
+            model_a,
+            model_b,
+            neg_ratio=4,
+            sample_users=sample_users,
+        )
+
+        # Feature columns (exclude id and label cols)
+        drop_cols = ["user_id", "parent_asin", "label"]
+        feature_cols = [c for c in ctr_df.columns if c not in drop_cols]
+
+        X = ctr_df[feature_cols]
+        y = ctr_df["label"]
+
+        # Train/val split
+        X_train, X_val, y_train, y_val = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+
+        mlflow.log_params(
+            {
+                "n_train": len(X_train),
+                "n_val": len(X_val),
+                "n_features": len(feature_cols),
+                "neg_ratio": 4,
+                "sample_users": sample_users,
+            }
+        )
+
+        # Train
+        start_time = time.time()
+        model = CTRModel()
+        model.fit(X_train, y_train, X_val, y_val)
+        train_duration = time.time() - start_time
+
+        # Evaluate
+        val_probs = model.predict(X_val)
+        auc = roc_auc_score(y_val, val_probs)
+        logloss = log_loss(y_val, val_probs)
+
+        mlflow.log_metrics(
+            {
+                "auc_roc": auc,
+                "log_loss": logloss,
+                "train_duration_seconds": train_duration,
+            }
+        )
+
+        # Feature importance
+        importance = model.get_feature_importance()
+        top_features = sorted(importance.items(), key=lambda x: x[1], reverse=True)[:5]
+        logger.info(f"Top features: {top_features}")
+
+        logger.info(
+            f"CTR Model trained in {train_duration:.1f}s | "
+            f"AUC-ROC: {auc:.4f} | Log-loss: {logloss:.4f}"
+        )
+
+        metrics = {"auc_roc": auc, "log_loss": logloss}
+        return model, metrics
+
+
+def get_recommendations(
+    user_id: str,
+    model_a: CollaborativeModel,
+    model_b: SemanticModel,
+    model_c: CTRModel,
+    user_features: pd.DataFrame,
+    item_features: pd.DataFrame,
+    train_df: pd.DataFrame,
+    n: int = 10,
+    n_candidates: int = 100,
+) -> list[tuple[str, float]]:
+    """Full pipeline: retrieval (A+B) -> re-ranking (C) -> top N."""
+    # Retrieval
+    candidates_a = model_a.recommend(user_id, n=n_candidates, exclude_seen=True)
+    candidates_b = model_b.recommend(user_id, train_df, n=n_candidates) if model_b else []
+
+    # Union and deduplicate
+    seen_candidates: dict[str, float] = {}
+    for item_id, score in candidates_a:
+        seen_candidates[item_id] = score
+    for item_id, score in candidates_b:
+        if item_id not in seen_candidates:
+            seen_candidates[item_id] = score
+
+    if not seen_candidates:
+        return []
+
+    # Build feature rows for each candidate
+    uf_row = user_features[user_features["user_id"] == user_id]
+    candidate_rows = []
+    for item_id in seen_candidates:
+        row = {"user_id": user_id, "parent_asin": item_id}
+        # User features
+        if not uf_row.empty:
+            for col in uf_row.columns:
+                if col != "user_id":
+                    row[col] = float(uf_row[col].iloc[0])
+        # Item features
+        if_row = item_features[item_features["parent_asin"] == item_id]
+        if not if_row.empty:
+            for col in if_row.columns:
+                if col != "parent_asin":
+                    row[col] = float(if_row[col].iloc[0])
+        # Cross features (scores from A and B)
+        row["model_a_score"] = seen_candidates[item_id]
+        row["model_b_score"] = 0.0
+        candidate_rows.append(row)
+
+    # Re-rank with Model C
+    reranked = model_c.rerank(candidate_rows)
+    return [(r["parent_asin"], r["ctr_score"]) for r in reranked[:n]]
+
+
+def evaluate_full_pipeline(
+    model_a: CollaborativeModel,
+    model_b: SemanticModel,
+    model_c: CTRModel,
+    user_features: pd.DataFrame,
+    item_features: pd.DataFrame,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    ks: list[int] = None,
+    sample_users: int = 500,
+) -> dict[str, float]:
+    """Evaluate the full pipeline (A+B+C) on the test set."""
+    if ks is None:
+        ks = [5, 10, 20]
+
+    user_metrics = {f"pipeline_precision_at_{k}": [] for k in ks}
+    user_metrics.update({f"pipeline_recall_at_{k}": [] for k in ks})
+    user_metrics.update({f"pipeline_ndcg_at_{k}": [] for k in ks})
+
+    test_users = test_df["user_id"].unique()
+    if sample_users:
+        rng = np.random.default_rng(42)
+        test_users = rng.choice(test_users, size=min(sample_users, len(test_users)), replace=False)
+
+    logger.info(f"Evaluating full pipeline on {len(test_users)} users...")
+
+    for user_id in test_users:
+        relevant = test_df[test_df["user_id"] == user_id]["parent_asin"].tolist()
+        recs = get_recommendations(
+            user_id,
+            model_a,
+            model_b,
+            model_c,
+            user_features,
+            item_features,
+            train_df,
+            n=max(ks),
+        )
+        recommended = [item_id for item_id, _ in recs]
+
+        for k in ks:
+            user_metrics[f"pipeline_precision_at_{k}"].append(
+                precision_at_k(recommended, relevant, k)
+            )
+            user_metrics[f"pipeline_recall_at_{k}"].append(recall_at_k(recommended, relevant, k))
+            user_metrics[f"pipeline_ndcg_at_{k}"].append(ndcg_at_k(recommended, relevant, k))
+
+    results = {}
+    for metric_name, values in user_metrics.items():
+        results[metric_name] = sum(values) / len(values) if values else 0.0
+
+    return results
+
+
+def run_training(tuning: bool = False, train_model_b: bool = False, train_model_c: bool = False):
     data_dir = Path("data/processed")
     train_df = pd.read_parquet(data_dir / "train.parquet")
     test_df = pd.read_parquet(data_dir / "test.parquet")
@@ -305,6 +500,14 @@ def run_training(tuning: bool = False, train_model_b: bool = False):
             logger.warning(f"MLflow server not reachable, using local storage: {tracking_uri}")
     mlflow.set_tracking_uri(tracking_uri)
 
+    metadata_df = None
+    if train_model_b or train_model_c:
+        metadata_path = data_dir / "metadata.parquet"
+        if metadata_path.exists():
+            metadata_df = pd.read_parquet(metadata_path)
+        else:
+            logger.warning("metadata.parquet not found")
+
     # Model A
     if tuning:
         model_a, metrics_a = hyperparameter_search(train_df, test_df)
@@ -313,24 +516,16 @@ def run_training(tuning: bool = False, train_model_b: bool = False):
 
     logger.info(f"Model A metrics: {metrics_a}")
 
+    model_b = None
+    metrics_b = {}
+
     # Model B
-    if train_model_b:
-        metadata_path = data_dir / "metadata.parquet"
-        if not metadata_path.exists():
-            logger.warning("metadata.parquet not found, skipping Model B")
-            return model_a, metrics_a
-
-        metadata_df = pd.read_parquet(metadata_path)
+    if train_model_b and metadata_df is not None:
         model_b, metrics_b = train_semantic_and_log(train_df, test_df, metadata_df)
-
-        # Comparison
         comparison = compare_models(metrics_a, metrics_b)
         comparison.to_csv(data_dir / "model_comparison.csv", index=False)
-
-        # Cold start analysis
         cold_results = cold_start_analysis(model_b, train_df, test_df)
 
-        # Log comparison in MLflow
         mlflow.set_experiment("recengine-comparison")
         with mlflow.start_run(run_name="model-a-vs-b"):
             for k, v in metrics_a.items():
@@ -341,7 +536,28 @@ def run_training(tuning: bool = False, train_model_b: bool = False):
                 if isinstance(v, (int, float)):
                     mlflow.log_metric(f"cold_start_{k}", v)
 
-        return (model_a, metrics_a), (model_b, metrics_b)
+    # Model C
+    if train_model_c and metadata_df is not None:
+        model_c, metrics_c = train_ctr_and_log(train_df, test_df, metadata_df, model_a, model_b)
+        logger.info(f"Model C metrics: {metrics_c}")
+
+        # Full pipeline evaluation
+        user_features = build_user_features(train_df)
+        item_features = build_item_features(train_df, metadata_df)
+        pipeline_metrics = evaluate_full_pipeline(
+            model_a, model_b, model_c, user_features, item_features, train_df, test_df
+        )
+        logger.info(f"Full pipeline metrics: {pipeline_metrics}")
+
+        # Compare pipeline vs Model A alone
+        mlflow.set_experiment("recengine-comparison")
+        with mlflow.start_run(run_name="pipeline-vs-model-a"):
+            for k, v in metrics_a.items():
+                mlflow.log_metric(f"model_a_{k}", v)
+            for k, v in pipeline_metrics.items():
+                mlflow.log_metric(k, v)
+
+        return model_a, model_b, model_c, pipeline_metrics
 
     return model_a, metrics_a
 
@@ -350,5 +566,6 @@ if __name__ == "__main__":
     import sys
 
     train_b = "--model-b" in sys.argv
+    train_c = "--model-c" in sys.argv
     tuning = "--tuning" in sys.argv
-    run_training(tuning=tuning, train_model_b=train_b)
+    run_training(tuning=tuning, train_model_b=train_b, train_model_c=train_c)

@@ -22,7 +22,7 @@ def build_product_texts(metadata_df: pd.DataFrame) -> dict[str, str]:
         description = row.get("description", "")
         if isinstance(description, list):
             description = " ".join(str(d) for d in description if d)
-        elif pd.isna(description):
+        elif not isinstance(description, str) or pd.isna(description):
             description = ""
         description = str(description).strip()
         if description:
