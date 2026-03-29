@@ -51,7 +51,11 @@ def build_item_features(train_df: pd.DataFrame, metadata_df: pd.DataFrame) -> pd
     # Description length
     if "description" in metadata_df.columns:
         meta["description_length"] = metadata_df["description"].apply(
-            lambda x: len(" ".join(x) if isinstance(x, list) else str(x or ""))
+            lambda x: len(
+                " ".join(str(i) for i in x)
+                if isinstance(x, list)
+                else str(x) if isinstance(x, str) else ""
+            )
         )
     else:
         meta["description_length"] = 0
