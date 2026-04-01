@@ -225,13 +225,14 @@ def train_and_log(
         train_duration = time.time() - start_time
         mlflow.log_metric("train_duration_seconds", train_duration)
 
-        # RMSE on test set
+        # RMSE on test set (vectorized per user to avoid iterrows)
         test_preds = []
         test_actuals = []
-        for _, row in test_df.iterrows():
-            preds = model.predict(row["user_id"], [row["parent_asin"]])
-            test_preds.append(preds[0][1])
-            test_actuals.append(row["rating"])
+        for uid, group in test_df.groupby("user_id"):
+            item_ids = group["parent_asin"].tolist()
+            preds = model.predict(uid, item_ids)
+            test_preds.extend(score for _, score in preds)
+            test_actuals.extend(group["rating"].tolist())
         rmse = float(np.sqrt(np.mean((np.array(test_preds) - np.array(test_actuals)) ** 2)))
         mlflow.log_metric("rmse", rmse)
 

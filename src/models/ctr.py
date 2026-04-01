@@ -34,19 +34,14 @@ def build_ctr_dataset(
         positives = positives[positives["user_id"].isin(users_sample)]
 
     rows = []
-    seen_by_user: dict[str, set] = {}
-    for _, row in train_df.iterrows():
-        uid = row["user_id"]
-        if uid not in seen_by_user:
-            seen_by_user[uid] = set()
-        seen_by_user[uid].add(row["parent_asin"])
+    # Build seen_by_user using groupby (vectorized, avoids iterrows)
+    seen_by_user: dict[str, set] = {
+        uid: set(grp["parent_asin"]) for uid, grp in train_df.groupby("user_id")
+    }
 
     logger.info(f"Building CTR dataset: {len(positives)} positives, neg_ratio={neg_ratio}")
 
-    for _, pos_row in positives.iterrows():
-        user_id = pos_row["user_id"]
-        item_id = pos_row["parent_asin"]
-
+    for user_id, item_id in zip(positives["user_id"], positives["parent_asin"]):
         # Positive pair
         cross = build_cross_features(user_id, item_id, model_a, model_b, train_df, user_features)
         rows.append({"user_id": user_id, "parent_asin": item_id, "label": 1, **cross})
@@ -119,6 +114,9 @@ class CTRModel:
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         """Return P(click) probabilities."""
         if isinstance(X, pd.DataFrame):
+            missing = set(self.feature_cols) - set(X.columns)
+            if missing:
+                raise ValueError(f"CTRModel.predict: missing feature columns: {sorted(missing)}")
             X = X[self.feature_cols]
         return self.model.predict_proba(X)[:, 1]
 

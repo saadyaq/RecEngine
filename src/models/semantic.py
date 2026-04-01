@@ -8,39 +8,36 @@ from loguru import logger
 from sentence_transformers import SentenceTransformer
 
 
+def _coerce_text_field(value) -> str:
+    """Normalize a metadata field (str, list, or NaN) to a clean string."""
+    if isinstance(value, list):
+        return " ".join(str(v) for v in value if v)
+    if not isinstance(value, str) or pd.isna(value):
+        return ""
+    return value.strip()
+
+
 def build_product_texts(metadata_df: pd.DataFrame) -> dict[str, str]:
     """Concatenate title + description + features for each product."""
-    product_texts = {}
-    for _, row in metadata_df.iterrows():
-        asin = row["parent_asin"]
+    titles = metadata_df.get("title", pd.Series("", index=metadata_df.index)).fillna("")
+    descriptions = metadata_df.get("description", pd.Series("", index=metadata_df.index))
+    features = metadata_df.get("features", pd.Series("", index=metadata_df.index))
+
+    def _build_text(title, description, feat) -> str:
         parts = []
+        t = str(title).strip()
+        if t:
+            parts.append(t)
+        d = _coerce_text_field(description)
+        if d:
+            parts.append(d)
+        f = _coerce_text_field(feat)
+        if f:
+            parts.append(f)
+        return " ".join(parts) if parts else "unknown product"
 
-        title = row.get("title", "")
-        if pd.notna(title) and str(title).strip():
-            parts.append(str(title).strip())
-
-        description = row.get("description", "")
-        if isinstance(description, list):
-            description = " ".join(str(d) for d in description if d)
-        elif not isinstance(description, str) or pd.isna(description):
-            description = ""
-        description = str(description).strip()
-        if description:
-            parts.append(description)
-
-        features = row.get("features", "")
-        if isinstance(features, list):
-            features = " ".join(str(f) for f in features if f)
-        elif not isinstance(features, str) or pd.isna(features):
-            features = ""
-        features = str(features).strip()
-        if features:
-            parts.append(features)
-
-        text = " ".join(parts) if parts else "unknown product"
-        product_texts[asin] = text
-
-    return product_texts
+    texts = [_build_text(t, d, f) for t, d, f in zip(titles, descriptions, features)]
+    return dict(zip(metadata_df["parent_asin"], texts))
 
 
 class SemanticModel:

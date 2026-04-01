@@ -71,14 +71,23 @@ def temporal_train_test_split(
     train_frames = []
     test_frames = []
 
+    skipped = 0
     for user_id, group in df.groupby("user_id"):
         n = len(group)
         split_idx = int(n * (1 - test_ratio))
-        if split_idx < 1:
+        if n < 2:
+            # Only 1 interaction: can't split, put in train only
             train_frames.append(group)
+            skipped += 1
             continue
+        if split_idx < 1:
+            # Very few interactions: keep at least 1 in train, 1 in test
+            split_idx = 1
         train_frames.append(group.iloc[:split_idx])
         test_frames.append(group.iloc[split_idx:])
+
+    if skipped:
+        logger.warning(f"Skipped {skipped} users with only 1 interaction (train-only)")
 
     train = pd.concat(train_frames, ignore_index=True)
     test = pd.concat(test_frames, ignore_index=True)
