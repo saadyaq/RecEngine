@@ -51,6 +51,7 @@ def evaluate_semantic_model(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
     ks: list[int] = None,
+    sample_users: int = 1000,
 ) -> dict[str, float]:
     """Evaluate Model B with the same ranking metrics as Model A."""
     if ks is None:
@@ -61,6 +62,9 @@ def evaluate_semantic_model(
     user_metrics.update({f"ndcg_at_{k}": [] for k in ks})
 
     test_users = test_df["user_id"].unique()
+    if sample_users and len(test_users) > sample_users:
+        rng = np.random.default_rng(42)
+        test_users = rng.choice(test_users, size=sample_users, replace=False)
     logger.info(f"Evaluating Model B on {len(test_users)} users...")
 
     for user_id in test_users:
@@ -93,9 +97,15 @@ def train_semantic_and_log(
         mlflow.log_param("model_name", model_name)
         mlflow.log_param("model_type", "SemanticEmbeddings")
 
-        # Build index
+        # Build index — filter metadata to only items present in train
+        train_items = set(train_df["parent_asin"].unique())
+        metadata_filtered = metadata_df[metadata_df["parent_asin"].isin(train_items)]
+        logger.info(
+            f"Metadata filtered: {len(metadata_df):,} → {len(metadata_filtered):,} items (train only)"
+        )
+
         start_time = time.time()
-        product_texts = build_product_texts(metadata_df)
+        product_texts = build_product_texts(metadata_filtered)
         mlflow.log_metric("num_products", len(product_texts))
 
         model = SemanticModel(model_name=model_name)
