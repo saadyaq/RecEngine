@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pandas as pd
 import pytest
-from httpx import ASGITransport, AsyncClient
+from starlette.testclient import TestClient
 
 from src.models.collaborative import CollaborativeModel
 from src.models.registry import ModelRegistry
@@ -36,18 +36,18 @@ def _make_mini_registry() -> ModelRegistry:
 
 
 @pytest.fixture
-async def client(tmp_path: Path):
+def client(tmp_path: Path):
     mini_reg = _make_mini_registry()
     with patch.object(ModelRegistry, "load", lambda self: None):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        with TestClient(app) as tc:
             app.state.registry = mini_reg
             app.state.pred_logger = PredictionLogger(log_dir=tmp_path)
-            yield ac, tmp_path
+            yield tc, tmp_path
 
 
-async def test_health_endpoint(client):
-    ac, _ = client
-    resp = await ac.get("/health")
+def test_health_endpoint(client):
+    tc, _ = client
+    resp = tc.get("/health")
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "ok"
@@ -55,9 +55,9 @@ async def test_health_endpoint(client):
     assert data["uptime_seconds"] >= 0
 
 
-async def test_recommend_returns_items(client):
-    ac, _ = client
-    resp = await ac.post("/recommend", json={"user_id": "u1", "num_results": 3})
+def test_recommend_returns_items(client):
+    tc, _ = client
+    resp = tc.post("/recommend", json={"user_id": "u1", "num_results": 3})
     assert resp.status_code == 200
     data = resp.json()
     assert len(data["items"]) == 3
@@ -69,9 +69,9 @@ async def test_recommend_returns_items(client):
     assert data["latency_ms"] >= 0
 
 
-async def test_recommend_logs_prediction(client):
-    ac, tmp_path = client
-    await ac.post("/recommend", json={"user_id": "u2", "num_results": 2})
+def test_recommend_logs_prediction(client):
+    tc, tmp_path = client
+    tc.post("/recommend", json={"user_id": "u2", "num_results": 2})
     log_path = tmp_path / "predictions.jsonl"
     assert log_path.exists()
     lines = log_path.read_text().strip().split("\n")
@@ -83,9 +83,9 @@ async def test_recommend_logs_prediction(client):
     assert "latency_ms" in record
 
 
-async def test_feedback_endpoint(client):
-    ac, _ = client
-    resp = await ac.post(
+def test_feedback_endpoint(client):
+    tc, _ = client
+    resp = tc.post(
         "/feedback",
         json={
             "user_id": "u1",
@@ -98,9 +98,9 @@ async def test_feedback_endpoint(client):
     assert resp.json()["status"] == "ok"
 
 
-async def test_feedback_logged(client):
-    ac, tmp_path = client
-    await ac.post(
+def test_feedback_logged(client):
+    tc, tmp_path = client
+    tc.post(
         "/feedback",
         json={"user_id": "u3", "item_id": "i2", "action": "purchase"},
     )
@@ -111,10 +111,10 @@ async def test_feedback_logged(client):
     assert record["action"] == "purchase"
 
 
-async def test_recommend_unknown_user_returns_fallback(client):
+def test_recommend_unknown_user_returns_fallback(client):
     """Unknown users should get fallback items, not a 500 error."""
-    ac, _ = client
-    resp = await ac.post("/recommend", json={"user_id": "unknown_user_xyz", "num_results": 5})
+    tc, _ = client
+    resp = tc.post("/recommend", json={"user_id": "unknown_user_xyz", "num_results": 5})
     assert resp.status_code == 200
     data = resp.json()
     assert isinstance(data["items"], list)
