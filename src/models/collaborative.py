@@ -79,8 +79,6 @@ class CollaborativeModel:
                 item_idx = self.item_map[item_id]
                 item_vec = self.model.item_factors[item_idx]
                 score = float(np.dot(user_vec, item_vec))
-                # Clip to rating range
-                score = max(1.0, min(5.0, score))
             predictions.append((item_id, score))
         return predictions
 
@@ -112,7 +110,5 @@ class CollaborativeModel:
         for idx, score in zip(item_indices, scores):
             item_id = self.reverse_item_map.get(int(idx))
             if item_id:
-                # Map score to 1-5 range
-                clipped = max(1.0, min(5.0, float(score)))
-                results.append((item_id, clipped))
+                results.append((item_id, float(score)))
         return results
