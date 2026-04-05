@@ -110,9 +110,12 @@ def _run_variant(
 
 
 def _fallback_recs(registry: ModelRegistry, n: int) -> list[tuple[str, float]]:
-    """Return top-N popular items as cold-start fallback."""
-    items = (registry.model_a.all_items or [])[:n]
-    return [(item, 0.0) for item in items]
+    """Return top-N popular items as cold-start fallback, scored by global_mean."""
+    model = registry.model_a
+    if model is None:
+        return []
+    items = (model._popular_items or model.all_items or [])[:n]
+    return [(item, model.global_mean) for item in items]
 
 
 @app.post("/feedback")
