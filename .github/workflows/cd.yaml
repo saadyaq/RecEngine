@@ -1,0 +1,65 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Dockerfile"
+      - "pyproject.toml"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/recengine/recengine:latest
+            ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/recengine/recengine:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: recengine
+          image: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/recengine/recengine:${{ github.sha }}
+          region: ${{ secrets.GCP_REGION }}
+          flags: |
+            --allow-unauthenticated
+            --set-env-vars=DEPLOYMENT_MODE=${{ vars.DEPLOYMENT_MODE }},SPLIT_RATIO=${{ vars.SPLIT_RATIO }},MLFLOW_TRACKING_URI=${{ vars.MLFLOW_TRACKING_URI }}
+            --memory=512Mi
+            --cpu=1
+            --concurrency=80
+            --timeout=300
+
+      - name: Verify deployment
+        run: |
+          SERVICE_URL=$(gcloud run services describe recengine --region ${{ secrets.GCP_REGION }} --format 'value(status.url)')
+          echo "Service deployed to: $SERVICE_URL"
+          curl -f "$SERVICE_URL/health" || exit 1
