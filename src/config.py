@@ -3,7 +3,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-
     model_config = SettingsConfigDict(env_file=".env")
 
     # Paths
@@ -15,6 +14,10 @@ class Settings(BaseSettings):
     DATASET_CATEGORY: str = "Electronics"
     MIN_INTERACTIONS: int = 10
     TEST_RATIO: float = 0.2
+
+    # Dask chunked processing
+    USE_DASK: bool = False
+    DASK_CHUNK_SIZE: int = 500_000
 
     # Chunk
     CHUNK_SIZE: int = 512
