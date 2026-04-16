@@ -120,11 +120,94 @@ Three deployment modes controlled by `DEPLOYMENT_MODE` env variable:
 - [x] Week 2 — Model A (ALS collaborative filtering, MLflow tracking, hyperparameter tuning)
 - [x] Week 3 — Model B (semantic embeddings, FAISS index, cold start analysis)
 - [x] Week 4 — Model C (XGBoost CTR, feature engineering, SHAP, re-ranking pipeline)
-- [ ] Week 5 — FastAPI + A/B testing router
-- [ ] Week 6 — Docker + GCP Cloud Run deployment
-- [ ] Week 7 — Monitoring (Evidently drift, Prometheus, Streamlit dashboard)
-- [ ] Week 8 — Automated retraining + CI/CT/CD
+- [x] Week 5 — FastAPI + A/B testing router
+- [x] Week 6 — Docker + GCP Cloud Run deployment
+- [x] Week 7 — Monitoring (Evidently drift, Prometheus, Streamlit dashboard)
+- [x] Week 8 — Automated retraining + CI/CT/CD
 - [ ] Week 9 — Documentation + polish + v1.0.0 release
+
+## Docker & Deployment
+
+### Docker Compose (Local Development)
+
+```bash
+# Start all services (API, MLflow, Dashboard)
+docker-compose up --build
+
+# Access services:
+# - API: http://localhost:8000
+# - MLflow UI: http://localhost:5000
+# - Dashboard: http://localhost:8501
+
+# View logs
+docker-compose logs -f api
+
+# Stop all services
+docker-compose down
+```
+
+### Docker (Single Container)
+
+```bash
+# Build image
+docker build -t recengine .
+
+# Run container
+docker run -p 8000:8000 \
+  -e DEPLOYMENT_MODE=ab_test \
+  -e MLFLOW_TRACKING_URI=http://localhost:5000 \
+  recengine
+
+# Test health endpoint
+curl http://localhost:8000/health
+```
+
+### CI/CD Pipeline
+
+**CI (Continuous Integration)** - Runs on every push/PR:
+- Linting with ruff
+- Formatting check with black
+- Type checking with mypy
+- Tests with pytest
+
+**CD (Continuous Deployment)** - Runs on merge to main:
+- Builds Docker image
+- Pushes to GCP Artifact Registry
+- Deploys to Cloud Run
+- Verifies deployment health
+
+**CT (Continuous Training)** - Runs weekly (Sunday midnight UTC):
+- Retrains all models
+- Evaluates against current production
+- Promotes to staging if improved
+- Uploads training artifacts
+
+### GCP Cloud Run Deployment
+
+**Prerequisites:**
+1. GCP project with Cloud Run API enabled
+2. Artifact Registry configured
+3. Service account with appropriate permissions
+
+**GitHub Secrets Required:**
+- `GCP_CREDENTIALS`: Service account JSON key
+- `GCP_PROJECT_ID`: Your GCP project ID
+- `GCP_REGION`: Deployment region (e.g., `us-central1`)
+
+**GitHub Variables Required:**
+- `DEPLOYMENT_MODE`: shadow, canary, or ab_test
+- `SPLIT_RATIO`: Traffic split (0.0 to 1.0)
+- `MLFLOW_TRACKING_URI`: MLflow server URL
+
+**Deploy manually:**
+```bash
+gcloud run deploy recengine \
+  --image us-central1-docker.pkg.dev/YOUR_PROJECT/recengine/recengine:latest \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars DEPLOYMENT_MODE=ab_test,SPLIT_RATIO=0.5
+```
 
 ## Dataset
 
