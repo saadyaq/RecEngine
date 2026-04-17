@@ -9,12 +9,16 @@ build/
 # Data
 data/raw/
 data/processed/
-*.csv
+data/models/
+data/logs/
+data/reports/
 *.parquet
 
 # Modèles & MLflow
 mlruns/
 mlartifacts/
+mlflow.db
+*.pkl
 
 # Environnement
 .env

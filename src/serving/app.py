@@ -1,9 +1,9 @@
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from loguru import logger
-from prometheus_client import make_asgi_app
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from src.models.registry import ModelRegistry
 from src.monitoring.metrics import (
@@ -37,10 +37,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="RecEngine", version="0.1.0", lifespan=lifespan)
-
-# Mount Prometheus /metrics endpoint
-metrics_app = make_asgi_app()
-app.mount("/metrics", metrics_app)
 
 
 @app.post("/recommend", response_model=RecommendResponse)
@@ -139,3 +135,10 @@ def health() -> HealthResponse:
         model_versions=registry.versions,
         uptime_seconds=uptime,
     )
+
+
+@app.get("/metrics")
+@app.get("/metrics/")
+def metrics() -> Response:
+    """Expose Prometheus metrics without a trailing-slash redirect."""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

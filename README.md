@@ -62,7 +62,7 @@ Pipeline A+C improves over Model A alone: +15% NDCG@10, +29% Precision@10.
 
 ```bash
 # Setup
-git clone https://github.com/your-username/recengine.git
+git clone https://github.com/saadyaq/RecEngine.git
 cd recengine
 python -m venv venv && source venv/bin/activate
 pip install -e ".[dev]"
