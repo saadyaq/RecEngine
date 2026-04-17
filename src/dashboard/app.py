@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -174,6 +175,138 @@ def _render_drift_section(log_dir: Path, report_dir: Path) -> None:
             components.html(html, height=800, scrolling=True)
 
 
+def _two_proportion_z_test(clicks_a: int, n_a: int, clicks_b: int, n_b: int) -> tuple[float, float]:
+    """Returns (z_score, p_value) for two-proportion z-test (two-tailed)."""
+    if n_a == 0 or n_b == 0:
+        return 0.0, 1.0
+    p_a = clicks_a / n_a
+    p_b = clicks_b / n_b
+    p_pool = (clicks_a + clicks_b) / (n_a + n_b)
+    se = math.sqrt(p_pool * (1 - p_pool) * (1 / n_a + 1 / n_b))
+    if se == 0:
+        return 0.0, 1.0
+    z = (p_b - p_a) / se
+    # Approximation: p-value from standard normal CDF
+    p_value = 2 * (1 - _norm_cdf(abs(z)))
+    return round(z, 4), round(p_value, 4)
+
+
+def _norm_cdf(x: float) -> float:
+    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+
+
+def _sample_size_per_variant(
+    baseline_rate: float, mde: float, alpha: float = 0.05, power: float = 0.80
+) -> int:
+    """Minimum observations per variant for given MDE (minimum detectable effect)."""
+    if baseline_rate <= 0 or mde <= 0 or baseline_rate >= 1:
+        return 0
+    z_alpha = _norm_ppf(1 - alpha / 2)
+    z_beta = _norm_ppf(power)
+    p1 = baseline_rate
+    p2 = baseline_rate + mde
+    p2 = min(p2, 0.9999)
+    n = (
+        (z_alpha * math.sqrt(2 * p1 * (1 - p1)) + z_beta * math.sqrt(p1 * (1 - p1) + p2 * (1 - p2)))
+        ** 2
+    ) / (mde**2)
+    return math.ceil(n)
+
+
+def _norm_ppf(p: float) -> float:
+    """Rational approximation of the normal quantile function."""
+    if p <= 0 or p >= 1:
+        return float("inf")
+    # Abramowitz & Stegun approximation
+    c = [2.515517, 0.802853, 0.010328]
+    d = [1.432788, 0.189269, 0.001308]
+    if p < 0.5:
+        t = math.sqrt(-2 * math.log(p))
+    else:
+        t = math.sqrt(-2 * math.log(1 - p))
+    num = c[0] + c[1] * t + c[2] * t**2
+    den = 1 + d[0] * t + d[1] * t**2 + d[2] * t**3
+    z = t - num / den
+    return z if p >= 0.5 else -z
+
+
+def _render_ab_test_section(predictions: pd.DataFrame, feedback: pd.DataFrame) -> None:
+    st.subheader("A/B test analysis")
+
+    # -- Conversion rate by variant over time --
+    if not predictions.empty and not feedback.empty:
+        merged = feedback.merge(
+            predictions[["user_id", "variant", "timestamp"]].rename(
+                columns={"timestamp": "pred_ts"}
+            ),
+            on="user_id",
+            how="left",
+        )
+        clicks = merged[merged["action"] == "click"]
+        if not clicks.empty:
+            clicks_per_variant = clicks.groupby("variant").size().rename("clicks")
+            preds_per_variant = predictions.groupby("variant").size().rename("n")
+            ab = pd.concat([preds_per_variant, clicks_per_variant], axis=1).fillna(0)
+            ab["conversion_rate"] = ab["clicks"] / ab["n"].replace(0, float("nan"))
+            st.dataframe(ab.style.format({"conversion_rate": "{:.2%}"}), use_container_width=True)
+        else:
+            st.info("No click events yet to compute conversion rates.")
+    else:
+        st.info("Awaiting prediction and feedback data.")
+
+    st.divider()
+
+    # -- Z-test calculator --
+    st.markdown("**Statistical significance calculator** (two-proportion z-test)")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.caption("Variant A")
+        n_a = st.number_input("Impressions A", min_value=0, value=1000, step=100, key="na")
+        clicks_a = st.number_input("Clicks A", min_value=0, value=50, step=5, key="ca")
+    with c2:
+        st.caption("Variant B")
+        n_b = st.number_input("Impressions B", min_value=0, value=1000, step=100, key="nb")
+        clicks_b = st.number_input("Clicks B", min_value=0, value=65, step=5, key="cb")
+
+    z, p = _two_proportion_z_test(int(clicks_a), int(n_a), int(clicks_b), int(n_b))
+    significant = p < 0.05
+    r1, r2, r3 = st.columns(3)
+    r1.metric("Z-score", f"{z:.3f}")
+    r2.metric("p-value", f"{p:.4f}")
+    r3.metric("Significant (α=0.05)", "Yes" if significant else "No")
+    if significant:
+        rate_a = clicks_a / max(n_a, 1)
+        rate_b = clicks_b / max(n_b, 1)
+        lift = (rate_b - rate_a) / max(rate_a, 1e-9)
+        st.success(f"B outperforms A by {lift:+.1%} (statistically significant).")
+    else:
+        st.warning("Difference is not statistically significant yet.")
+
+    st.divider()
+
+    # -- Sample size calculator --
+    st.markdown("**Sample size calculator**")
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        baseline = st.number_input(
+            "Baseline CTR", min_value=0.001, max_value=0.999, value=0.05, step=0.005, format="%.3f"
+        )
+    with s2:
+        mde = st.number_input(
+            "Min. detectable effect (absolute)",
+            min_value=0.001,
+            max_value=0.5,
+            value=0.01,
+            step=0.005,
+            format="%.3f",
+        )
+    with s3:
+        power = st.selectbox("Power", options=[0.80, 0.90, 0.95], index=0)
+
+    n_needed = _sample_size_per_variant(baseline, mde, power=float(power))
+    st.metric("Required observations per variant", f"{n_needed:,}")
+
+
 def main() -> None:
     st.title("RecEngine monitoring dashboard")
     st.caption("Operational view over recommendation traffic, feedback, and prediction drift.")
@@ -202,6 +335,8 @@ def main() -> None:
 
     st.divider()
     _render_recent_tables(predictions, feedback)
+    st.divider()
+    _render_ab_test_section(predictions, feedback)
     st.divider()
     _render_drift_section(log_dir=log_dir, report_dir=report_dir)
 

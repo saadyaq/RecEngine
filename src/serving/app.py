@@ -3,9 +3,16 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from loguru import logger
-from prometheus_client import Counter, Histogram, make_asgi_app
+from prometheus_client import make_asgi_app
 
 from src.models.registry import ModelRegistry
+from src.monitoring.metrics import (
+    ERROR_COUNTER,
+    FEEDBACK_COUNTER,
+    ITEM_SCORE,
+    RECOMMEND_COUNTER,
+    RECOMMEND_LATENCY,
+)
 from src.serving.middleware import PredictionLogger
 from src.serving.router import ABRouter
 from src.serving.schemas import (
@@ -15,11 +22,6 @@ from src.serving.schemas import (
     RecommendRequest,
     RecommendResponse,
 )
-
-# Prometheus metrics
-RECOMMEND_COUNTER = Counter("recengine_recommend_total", "Total recommend calls", ["variant"])
-RECOMMEND_LATENCY = Histogram("recengine_recommend_latency_seconds", "Recommend latency in seconds")
-FEEDBACK_COUNTER = Counter("recengine_feedback_total", "Total feedback events", ["action"])
 
 
 @asynccontextmanager
@@ -45,6 +47,7 @@ app.mount("/metrics", metrics_app)
 def recommend(req: RecommendRequest) -> RecommendResponse:
     registry: ModelRegistry = app.state.registry
     if registry.model_a is None:
+        ERROR_COUNTER.labels(endpoint="/recommend").inc()
         raise HTTPException(status_code=503, detail="Model A not available")
 
     t0 = time.perf_counter()
@@ -69,8 +72,10 @@ def recommend(req: RecommendRequest) -> RecommendResponse:
             logger.warning(f"Shadow variant failed: {e}")
 
     latency_ms = (time.perf_counter() - t0) * 1000
-    RECOMMEND_COUNTER.labels(variant=serving_variant).inc()
-    RECOMMEND_LATENCY.observe(latency_ms / 1000)
+    RECOMMEND_COUNTER.labels(variant=serving_variant, status="ok").inc()
+    RECOMMEND_LATENCY.labels(variant=serving_variant).observe(latency_ms / 1000)
+    for rec_item in items:
+        ITEM_SCORE.labels(variant=serving_variant).observe(rec_item.score)
 
     app.state.pred_logger.log_prediction(
         req.user_id,

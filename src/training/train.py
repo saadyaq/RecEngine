@@ -139,7 +139,9 @@ def compare_models(
         rows.append({"metric": key, "model_a": val_a, "model_b": val_b, "diff_b_minus_a": diff})
 
     comparison = pd.DataFrame(rows)
-    logger.info(f"\n{'='*60}\nModel A vs Model B comparison:\n{comparison.to_string(index=False)}")
+    logger.info(
+        f"\n{'=' * 60}\nModel A vs Model B comparison:\n{comparison.to_string(index=False)}"
+    )
     return comparison
 
 
@@ -491,17 +493,26 @@ def evaluate_full_pipeline(
     return results
 
 
-def run_training(tuning: bool = False, train_model_b: bool = False, train_model_c: bool = False):
+def run_training(
+    tuning: bool = False,
+    train_model_b: bool = False,
+    train_model_c: bool = False,
+    auto_promote: bool = False,
+) -> dict:
+    """
+    Full training pipeline with optional auto-promotion.
+
+    Returns:
+        dict with training results and promotion status
+    """
     data_dir = Path("data/processed")
     train_df = pd.read_parquet(data_dir / "train.parquet")
     test_df = pd.read_parquet(data_dir / "test.parquet")
 
     logger.info(f"Train: {len(train_df):,} | Test: {len(test_df):,}")
 
-    # Use local file storage by default, remote server if configured
     tracking_uri = settings.MLFLOW_TRACKING_URI
     if tracking_uri.startswith("http"):
-        # Check if server is reachable, fallback to local if not
         try:
             import requests
 
@@ -519,6 +530,8 @@ def run_training(tuning: bool = False, train_model_b: bool = False, train_model_
         else:
             logger.warning("metadata.parquet not found")
 
+    results = {"models_trained": [], "promotion_results": {}}
+
     # Model A
     if tuning:
         model_a, metrics_a = hyperparameter_search(train_df, test_df)
@@ -526,6 +539,8 @@ def run_training(tuning: bool = False, train_model_b: bool = False, train_model_
         model_a, metrics_a = train_and_log(train_df, test_df)
 
     logger.info(f"Model A metrics: {metrics_a}")
+    results["models_trained"].append("model_a")
+    results["model_a_metrics"] = metrics_a
 
     model_b = None
     metrics_b = {}
@@ -547,12 +562,14 @@ def run_training(tuning: bool = False, train_model_b: bool = False, train_model_
                 if isinstance(v, (int, float)):
                     mlflow.log_metric(f"cold_start_{k}", v)
 
+        results["models_trained"].append("model_b")
+        results["model_b_metrics"] = metrics_b
+
     # Model C
     if train_model_c and metadata_df is not None:
         model_c, metrics_c = train_ctr_and_log(train_df, test_df, metadata_df, model_a, model_b)
         logger.info(f"Model C metrics: {metrics_c}")
 
-        # Full pipeline evaluation
         user_features = build_user_features(train_df)
         item_features = build_item_features(train_df, metadata_df)
         pipeline_metrics = evaluate_full_pipeline(
@@ -560,7 +577,6 @@ def run_training(tuning: bool = False, train_model_b: bool = False, train_model_
         )
         logger.info(f"Full pipeline metrics: {pipeline_metrics}")
 
-        # Compare pipeline vs Model A alone
         mlflow.set_experiment("recengine-comparison")
         with mlflow.start_run(run_name="pipeline-vs-model-a"):
             for k, v in metrics_a.items():
@@ -568,15 +584,60 @@ def run_training(tuning: bool = False, train_model_b: bool = False, train_model_
             for k, v in pipeline_metrics.items():
                 mlflow.log_metric(k, v)
 
-        return model_a, model_b, model_c, pipeline_metrics
+        results["models_trained"].append("model_c")
+        results["model_c_metrics"] = metrics_c
+        results["pipeline_metrics"] = pipeline_metrics
 
-    return model_a, metrics_a
+    if auto_promote:
+        from src.training.promote import auto_promote as promote_model
+
+        logger.info("Starting auto-promotion...")
+
+        current_run = mlflow.active_run()
+        if current_run:
+            run_id = current_run.info.run_id
+            results["promotion_results"]["model_a"] = promote_model("model-a", run_id)
+
+        if train_model_c:
+            current_run = mlflow.active_run()
+            if current_run:
+                run_id = current_run.info.run_id
+                results["promotion_results"]["model_c"] = promote_model("model-c", run_id)
+
+    return results
 
 
 if __name__ == "__main__":
     import sys
 
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print("Usage: python -m src.training.train [OPTIONS]")
+        print()
+        print("Options:")
+        print("  --model-b       Train Model B (semantic embeddings)")
+        print("  --model-c       Train Model C (CTR re-ranking)")
+        print("  --tuning        Run hyperparameter tuning for Model A")
+        print("  --auto-promote  Auto-promote models after training")
+        print("  --help, -h      Show this help message")
+        print()
+        print("Examples:")
+        print("  python -m src.training.train")
+        print("  python -m src.training.train --model-b --model-c")
+        print("  python -m src.training.train --model-c --auto-promote")
+        sys.exit(0)
+
     train_b = "--model-b" in sys.argv
     train_c = "--model-c" in sys.argv
     tuning = "--tuning" in sys.argv
-    run_training(tuning=tuning, train_model_b=train_b, train_model_c=train_c)
+    auto_promote_flag = "--auto-promote" in sys.argv
+
+    results = run_training(
+        tuning=tuning,
+        train_model_b=train_b,
+        train_model_c=train_c,
+        auto_promote=auto_promote_flag,
+    )
+
+    logger.info(f"Training completed. Models trained: {results['models_trained']}")
+    if results["promotion_results"]:
+        logger.info(f"Promotion results: {results['promotion_results']}")

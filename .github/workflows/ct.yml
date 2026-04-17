@@ -1,0 +1,131 @@
+name: Continuous Training
+
+on:
+  schedule:
+    - cron: "0 2 * * 0"  # Every Sunday at 2 AM UTC
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model to retrain (all, model-a, model-b, model-c)"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - model-a
+          - model-b
+          - model-c
+      tuning:
+        description: "Run hyperparameter tuning"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+env:
+  MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI || 'sqlite:///mlflow.db' }}
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Download processed data
+        uses: actions/cache@v4
+        with:
+          path: data/processed
+          key: processed-data-${{ hashFiles('data/processed/*.parquet') }}
+          restore-keys: |
+            processed-data-
+
+      - name: Check for training data
+        id: check_data
+        run: |
+          if [ ! -f "data/processed/train.parquet" ]; then
+            echo "Training data not found. Skipping retraining."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "Training data found."
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup MLflow tracking
+        run: |
+          mkdir -p mlruns
+          echo "MLFLOW_TRACKING_URI=sqlite:///mlflow.db" >> $GITHUB_ENV
+
+      - name: Train Model A
+        if: steps.check_data.outputs.skip == 'false' && (github.event.inputs.model == 'all' || github.event.inputs.model == 'model-a' || github.event.inputs.model == '')
+        run: |
+          python -m src.training.train --model-a ${{ github.event.inputs.tuning == 'true' && '--tuning' || '' }}
+
+      - name: Train Model B
+        if: steps.check_data.outputs.skip == 'false' && (github.event.inputs.model == 'all' || github.event.inputs.model == 'model-b' || github.event.inputs.model == '')
+        run: |
+          python -m src.training.train --model-b
+
+      - name: Train Model C
+        if: steps.check_data.outputs.skip == 'false' && (github.event.inputs.model == 'all' || github.event.inputs.model == 'model-c' || github.event.inputs.model == '')
+        run: |
+          python -m src.training.train --model-c
+
+      - name: Evaluate and promote models
+        if: steps.check_data.outputs.skip == 'false'
+        run: |
+          python -m src.training.promote model-a latest --canary
+          python -m src.training.promote model-c latest --canary
+
+      - name: Upload MLflow artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-artifacts
+          path: |
+            mlruns/
+            mlflow.db
+          retention-days: 7
+
+      - name: Upload model comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-comparison
+          path: data/processed/model_comparison.csv
+          retention-days: 7
+
+  deploy-staging:
+    needs: retrain
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy to staging
+        run: |
+          echo "Deploying new models to staging environment..."
+          echo "In production, this would update Cloud Run to serve staging models at 5% traffic"
+
+      - name: Notify deployment
+        run: |
+          echo "✅ Continuous Training completed successfully"
+          echo "📊 Models promoted to staging"
+          echo "🔍 Canary deployment ready for validation"
