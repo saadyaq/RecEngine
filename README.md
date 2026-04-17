@@ -124,7 +124,7 @@ Three deployment modes controlled by `DEPLOYMENT_MODE` env variable:
 - [x] Week 6 — Docker + GCP Cloud Run deployment
 - [x] Week 7 — Monitoring (Evidently drift, Prometheus, Streamlit dashboard)
 - [x] Week 8 — Automated retraining + CI/CT/CD
-- [ ] Week 9 — Documentation + polish + v1.0.0 release
+- [x] Week 9 — Documentation + polish + v1.0.0 release
 
 ## Docker & Deployment
 
