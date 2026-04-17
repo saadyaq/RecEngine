@@ -87,8 +87,10 @@ def test_metrics_endpoint() -> None:
             app.state.registry = reg
             app.state.pred_logger = PredictionLogger(log_dir=Path("/tmp/test_logs"))
             resp = tc.get("/metrics")
+            no_redirect_resp = tc.get("/metrics", follow_redirects=False)
 
     assert resp.status_code == 200
+    assert no_redirect_resp.status_code == 200
     body = resp.text
     assert "recengine_recommend_total" in body or "recengine_recommend" in body
 
