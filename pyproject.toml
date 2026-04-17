@@ -32,6 +32,7 @@ dependencies = [
     "loguru>=0.7",
     "python-dotenv>=1.0",
     "dask[dataframe]>=2024.1",
+    "implicit>=0.7",
 ]
 
 [project.optional-dependencies]
