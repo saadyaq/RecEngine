@@ -129,7 +129,8 @@ class CollaborativeModel:
         # Cold-start: unknown user → return popular items
         if user_id not in self.user_map:
             logger.warning(f"Unknown user '{user_id}': returning popularity-based fallback")
-            return [(item, self.global_mean) for item in self._popular_items[:n]]
+            popular = getattr(self, "_popular_items", None) or self.all_items
+            return [(item, self.global_mean) for item in popular[:n]]
 
         user_idx = self.user_map[user_id]
 

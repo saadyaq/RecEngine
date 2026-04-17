@@ -119,7 +119,7 @@ def _fallback_recs(registry: ModelRegistry, n: int) -> list[tuple[str, float]]:
     model = registry.model_a
     if model is None:
         return []
-    items = (model._popular_items or model.all_items or [])[:n]
+    items = (getattr(model, "_popular_items", None) or model.all_items or [])[:n]
     return [(item, model.global_mean) for item in items]
 
 
